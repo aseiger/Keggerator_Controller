@@ -1,4 +1,7 @@
 // Include the libraries we need
+
+#include <ArduinoJson.h>
+#include <ESP_EEPROM.h>
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
 
@@ -19,12 +22,20 @@ long lastMsg = 0;
 long lastReconnectAttempt = 0;
 long lastScreenUpdate = 0;
 long lastTempHistoryUpdate = 0;
-char msg[50];
+char msg[500];
 int value = 0;
 
-const char* tempPublishTopic = "keggerators/1/out/temperature";
-const char* setpointPublishTopic = "keggerators/1/out/setpoint";
+StaticJsonDocument<500> doc;
+JsonObject root = doc.to<JsonObject>();
+
+//const char* tempPublishTopic = "keggerators/1/out/temperature";
+//const char* setpointPublishTopic = "keggerators/1/out/setpoint";
+//const char* fanPublishTopic = "keggerators/1/out/fan";
+//const char* doorpublishTopic = "keggerators/1/out/door";
 const char* setpointSubscribeTopic = "keggerators/1/in/setpoint";
+const char* upHysteriesisSubscribeTopic = "keggerators/1/in/uphysteresis";
+const char* downHysteriesisSubscribeTopic = "keggerators/1/in/downhysteresis";
+const char* outTopic = "keggerators/1/out";
 
 #define OLED_RESET 4
 Adafruit_SSD1306 display(OLED_RESET);
@@ -75,7 +86,11 @@ double minTemp = INVALID_TEMP;
 //stores current states
 volatile double _setPoint = 40.0;
 volatile double _currentTemp = 40.0;
-volatile double _hysteresis = 2.5;
+volatile double _upHysteresis = 1.0;
+volatile double _downHysteresis = 1.0;
+volatile double _lastSetpoint = 0.0;
+volatile double _lastUpHysteresis = 0.0;
+volatile double _lastDownHysteresis = 0.0;
 volatile bool _fanStatus = true;
 volatile bool _relayState = false;
 volatile bool _doorState = true;
@@ -98,7 +113,7 @@ void setup()   {
   attachInterrupt(digitalPinToInterrupt(FAN_PULSE_PIN), fanPulseInterrupt, RISING); 
   pinMode(FREEZER_RELAY_PIN, OUTPUT);
   digitalWrite(FREEZER_RELAY_PIN, HIGH);
-  Serial.begin(9600);
+  //Serial.begin(9600);
   // Start up the library
   sensors.begin();
 
@@ -142,6 +157,16 @@ void setup()   {
   sensors.requestTemperatures(); // get the first temperature
   _currentTemp = sensors.getTempFByIndex(0);
 
+  EEPROM.begin(24); //4 doubles
+
+  EEPROM.get(0, _setPoint);
+  EEPROM.get(8, _upHysteresis);
+  EEPROM.get(16, _downHysteresis);
+
+  _lastSetpoint = _setPoint;
+  _lastUpHysteresis = _upHysteresis;
+  _lastDownHysteresis = _downHysteresis;
+
   os_timer_setfn(&temperatureUpdateTimer, updateTemperatureCallback, NULL);
   os_timer_arm(&temperatureUpdateTimer, 1000, true);
   os_timer_setfn(&screenUpdateTimer, updateScreenCallback, NULL);
@@ -161,8 +186,36 @@ void loop() {
     if (millis() >= lastMsg) 
     {
       lastMsg = millis() + 5000;
-      publishTemp(tempPublishTopic, _currentTemp);
-      publishTemp(setpointPublishTopic, _setPoint);
+      //instead of this, send a big JSON
+      publishStatus();
+
+      //determine if eeprom needs to be written
+      bool writeEEPROM = false;
+      if(_setPoint != _lastSetpoint)
+      {
+        _lastSetpoint = _setPoint;
+        EEPROM.put(0, _setPoint);
+        writeEEPROM = true;
+      }
+
+      if(_upHysteresis != _lastUpHysteresis)
+      {
+        _lastUpHysteresis = _upHysteresis;
+        EEPROM.put(8, _upHysteresis);
+        writeEEPROM = true;
+      }
+
+      if(_downHysteresis != _lastDownHysteresis)
+      {
+        _lastDownHysteresis = _downHysteresis;
+        EEPROM.put(16, _downHysteresis);
+        writeEEPROM = true;
+      }
+
+      if(writeEEPROM)
+      {
+        EEPROM.commit();
+      }
     }
   } 
   else
@@ -170,7 +223,7 @@ void loop() {
     if (millis() >= lastReconnectAttempt) 
     {
       lastReconnectAttempt = millis() + 5000;
-      Serial.println("Disconnected!");
+      //Serial.println("Disconnected!");
       // Attempt to reconnect
       if (reconnect()) {
         lastReconnectAttempt = 0;
@@ -179,6 +232,77 @@ void loop() {
   }
   //end of main loop
   delay(1);
+}
+
+void publishStatus(void)
+{
+  root["temp"] = _currentTemp;
+  root["setpoint"] = _setPoint;
+  root["units"] = "F";
+  root["UpHysteresis"] = _upHysteresis;
+  root["DownHysteresis"] = _downHysteresis;
+  root["RelayState"] = _relayState;
+  root["FanState"] = _fanStatus;
+  root["DoorState"] = _doorState;
+
+  serializeJson(root, msg);
+  //Serial.println(msg);
+  client.publish(outTopic, msg);
+}
+
+void mqtt_callback(char* topic, byte* payload, unsigned int length) {
+//  Serial.print("Message arrived [");
+//  Serial.print(topic);
+//  Serial.print("] ");
+//  for (int i = 0; i < length; i++) {
+//    Serial.print((char)payload[i]);
+//  }
+//  Serial.println();
+
+  payload[length] = '\0';
+
+  if(strcmp(topic, setpointSubscribeTopic) == 0)
+  {
+    char * pch;
+    pch = strtok((char *)payload," ,");
+    if(pch != NULL)
+    {
+      _setPoint = atof(pch);
+      //Serial.println(pch);
+    }
+  }
+  else if(strcmp(topic, upHysteriesisSubscribeTopic) == 0)
+  {
+    char * pch;
+    pch = strtok((char *)payload," ,");
+    if(pch != NULL)
+    {
+      _upHysteresis = atof(pch);
+      //Serial.println(pch);
+    }
+  }
+  else if(strcmp(topic, downHysteriesisSubscribeTopic) == 0)
+  {
+    char * pch;
+    pch = strtok((char *)payload," ,");
+    if(pch != NULL)
+    {
+      _downHysteresis = atof(pch);
+      //Serial.println(pch);
+    }
+  }
+}
+
+bool reconnect() {
+  // Attempt to connect
+  client.disconnect();
+  if (client.connect("Keggerator_1")) {
+    publishStatus();
+    client.subscribe(setpointSubscribeTopic);
+    client.subscribe(upHysteriesisSubscribeTopic);
+    client.subscribe(downHysteriesisSubscribeTopic);
+  }
+  return client.connected();
 }
 
 void upInterrupt()
@@ -290,57 +414,18 @@ void updateTempGraphCallback(void *pArg)
 
 void updateFridgeControlStatus(void *pArg)
 {
-  if(_currentTemp > _setPoint + _hysteresis) //too warm
+  if(_currentTemp > _setPoint + _upHysteresis) //too warm
   {
     //relay on
     _relayState = true;
     digitalWrite(FREEZER_RELAY_PIN, LOW);
   }
-  else if(_currentTemp < _setPoint - _hysteresis) //too cold
+  else if(_currentTemp < _setPoint - _downHysteresis) //too cold
   {
     //relay off
     _relayState = false;
     digitalWrite(FREEZER_RELAY_PIN, HIGH);
   }
-}
-
-void publishTemp(const char* topic, double temperature)
-{
-  snprintf (msg, 75, "%0.2f,F", temperature);
-  client.publish(topic, msg);
-}
-
-void mqtt_callback(char* topic, byte* payload, unsigned int length) {
-  Serial.print("Message arrived [");
-  Serial.print(topic);
-  Serial.print("] ");
-  for (int i = 0; i < length; i++) {
-    Serial.print((char)payload[i]);
-  }
-  Serial.println();
-
-  if(strcmp(topic, setpointSubscribeTopic) == 0)
-  {
-    char * pch;
-    pch = strtok((char *)payload," ,");
-    if(pch != NULL)
-    {
-      _setPoint = atof(pch);
-    }
-    publishTemp(setpointPublishTopic, _setPoint);
-  }
-}
-
-bool reconnect() {
-  // Attempt to connect
-  client.disconnect();
-  if (client.connect("Keggerator_1")) {
-    // ... and resubscribe
-    publishTemp(setpointPublishTopic, _setPoint);
-    publishTemp(tempPublishTopic, _currentTemp);
-    client.subscribe(setpointSubscribeTopic);
-  }
-  return client.connected();
 }
 
 void updateDisplay(double currentTemp, double setPoint, bool freezerState, bool fanState, bool doorState, bool mqttState) {
