@@ -103,6 +103,14 @@ bool screenLastMQTTState = false;
 bool screenGraphUpdate = false;
 bool screenLastDoorState = false;
 
+void ICACHE_RAM_ATTR upInterrupt();
+void ICACHE_RAM_ATTR downInterrupt();
+void ICACHE_RAM_ATTR fanPulseInterrupt();
+void ICACHE_RAM_ATTR updateScreenCallback(void *pArg);
+void ICACHE_RAM_ATTR updateTempGraphCallback(void *pArg);
+void ICACHE_RAM_ATTR updateTemperatureCallback(void *pArg);
+void ICACHE_RAM_ATTR fanAndDoorUpdateCallback(void *pArg);
+
 void setup()   {     
   pinMode(UP_BUTTON_PIN, INPUT);
   pinMode(DOWN_BUTTON_PIN, INPUT); 
@@ -305,7 +313,7 @@ bool reconnect() {
   return client.connected();
 }
 
-void upInterrupt()
+void ICACHE_RAM_ATTR upInterrupt()
 {
   bool currentState = digitalRead(UP_BUTTON_PIN);
   if(upButtonState == currentState) return;
@@ -332,7 +340,7 @@ void upInterrupt()
   }
 }
 
-void downInterrupt()
+void ICACHE_RAM_ATTR downInterrupt()
 {
   bool currentState = digitalRead(DOWN_BUTTON_PIN);
   if(downButtonState == currentState) return;
@@ -358,18 +366,18 @@ void downInterrupt()
   }
 }
 
-void fanPulseInterrupt()
+void ICACHE_RAM_ATTR fanPulseInterrupt()
 {
   fanPulseCount++;
 }
 
-void updateTemperatureCallback(void *pArg)
+void ICACHE_RAM_ATTR updateTemperatureCallback(void *pArg)
 {
   sensors.requestTemperatures(); // Send the command to get temperatures
   _currentTemp = sensors.getTempFByIndex(0);
 }
 
-void fanAndDoorUpdateCallback(void *pArg)
+void ICACHE_RAM_ATTR fanAndDoorUpdateCallback(void *pArg)
 {
   _doorState = !digitalRead(DOOR_SWITCH_PIN);
 
@@ -385,7 +393,7 @@ void fanAndDoorUpdateCallback(void *pArg)
   fanPulseCount = 0;
 }
 
-void updateScreenCallback(void *pArg)
+void ICACHE_RAM_ATTR updateScreenCallback(void *pArg)
 { 
   if((screenLastSetPoint != _setPoint) ||
      (screenLastCurrentTemp != _currentTemp) ||
@@ -406,7 +414,7 @@ void updateScreenCallback(void *pArg)
      }
 }
 
-void updateTempGraphCallback(void *pArg)
+void ICACHE_RAM_ATTR updateTempGraphCallback(void *pArg)
 {
   updateGraph(_currentTemp);
   screenGraphUpdate = true;
